@@ -1,154 +1,104 @@
 import cv2
 import numpy as np
-import face_recognition
-import torch
-from torchvision.models import detection
 import time
 
-class AdvancedVisionTracking:
+class BasicVisionTracking:
     def __init__(self):
-        self.face_locations = []
-        self.face_encodings = []
-        self.face_names = []
-        self.process_this_frame = True
-        self.known_face_encodings = []
-        self.known_face_names = []
-        self.load_known_faces()
+        # Initialize face detection
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
-        self.object_detector = detection.fasterrcnn_resnet50_fpn(pretrained=True)
-        self.object_detector.eval()
-        self.COCO_INSTANCE_CATEGORY_NAMES = [
-            '__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
-            'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A', 'stop sign',
-            'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-            'elephant', 'bear', 'zebra', 'giraffe', 'N/A', 'backpack', 'umbrella', 'N/A', 'N/A',
-            'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-            'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-            'bottle', 'N/A', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
-            'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza',
-            'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'N/A', 'dining table',
-            'N/A', 'N/A', 'toilet', 'N/A', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
-            'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'N/A', 'book',
-            'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-        ]
+        # Initialize color tracking
+        self.lower_color = np.array([35, 50, 50])  # Green color in HSV
+        self.upper_color = np.array([85, 255, 255])
         
-        self.prev_gray = None
-        self.prev_pts = None
+        # Motion tracking variables
+        self.prev_frame = None
         
-    def load_known_faces(self):
-        # Load known faces here. For demonstration, we'll use an empty list.
-        # In practice, you would load images and compute their encodings.
-        pass
+        # Performance tracking
+        self.fps = 0
+        self.frame_count = 0
+        self.start_time = time.time()
 
-    def detect_objects(self, frame):
-        img = torch.from_numpy(frame).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
-        with torch.no_grad():
-            predictions = self.object_detector(img)[0]
-        
-        boxes = predictions['boxes'].cpu().numpy()
-        labels = predictions['labels'].cpu().numpy()
-        scores = predictions['scores'].cpu().numpy()
-        
-        objects = []
-        for box, label, score in zip(boxes, labels, scores):
-            if score > 0.5:  # Confidence threshold
-                objects.append({
-                    'box': box.astype(int),
-                    'label': self.COCO_INSTANCE_CATEGORY_NAMES[label],
-                    'score': score
-                })
-        return objects
-
-    def recognize_faces(self, frame):
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-        
-        if self.process_this_frame:
-            self.face_locations = face_recognition.face_locations(rgb_small_frame)
-            self.face_encodings = face_recognition.face_encodings(rgb_small_frame, self.face_locations)
-            
-            self.face_names = []
-            for face_encoding in self.face_encodings:
-                matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
-                name = "Unknown"
-                if True in matches:
-                    first_match_index = matches.index(True)
-                    name = self.known_face_names[first_match_index]
-                self.face_names.append(name)
-        
-        self.process_this_frame = not self.process_this_frame
-        return self.face_locations, self.face_names
-
-    def track_motion(self, frame):
+    def detect_faces(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if self.prev_gray is None:
-            self.prev_gray = gray
-            self.prev_pts = cv2.goodFeaturesToTrack(self.prev_gray, maxCorners=100, qualityLevel=0.01, minDistance=10)
-            return frame
-
-        if self.prev_pts is not None:
-            next_pts, status, _ = cv2.calcOpticalFlowPyrLK(self.prev_gray, gray, self.prev_pts, None)
-            good_new = next_pts[status == 1]
-            good_old = self.prev_pts[status == 1]
-
-            for i, (new, old) in enumerate(zip(good_new, good_old)):
-                a, b = new.ravel()
-                c, d = old.ravel()
-                frame = cv2.line(frame, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
-                frame = cv2.circle(frame, (int(a), int(b)), 5, (0, 0, 255), -1)
-
-            self.prev_gray = gray.copy()
-            self.prev_pts = good_new.reshape(-1, 1, 2)
-
-        return frame
-
-    def process_frame(self, frame):
-        start_time = time.time()
+        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
         
-        # Object Detection
-        objects = self.detect_objects(frame)
-        for obj in objects:
-            box = obj['box']
-            cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), (255, 0, 0), 2)
-            cv2.putText(frame, f"{obj['label']} {obj['score']:.2f}", (box[0], box[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        
-        # Face Recognition
-        face_locations, face_names = self.recognize_faces(frame)
-        for (top, right, bottom, left), name in zip(face_locations, face_names):
-            top *= 4
-            right *= 4
-            bottom *= 4
-            left *= 4
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
-            cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        
-        # Motion Tracking
-        frame = self.track_motion(frame)
-        
-        # FPS calculation
-        end_time = time.time()
-        fps = 1 / (end_time - start_time)
-        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        
-        return frame
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.putText(frame, 'Face', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
 
-    def start_tracking(self):
-        cap = cv2.VideoCapture(0)
+    def detect_color(self, frame):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, self.lower_color, self.upper_color)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > 500:  # Filter small detections
+                x, y, w, h = cv2.boundingRect(contour)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(frame, 'Green Object', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+    def detect_motion(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        
+        if self.prev_frame is None:
+            self.prev_frame = gray
+            return
+        
+        frame_delta = cv2.absdiff(self.prev_frame, gray)
+        thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+        
+        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > 500:  # Filter small movements
+                (x, y, w, h) = cv2.boundingRect(contour)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
+                cv2.putText(frame, 'Motion', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+        
+        self.prev_frame = gray
+
+    def calculate_fps(self):
+        self.frame_count += 1
+        if self.frame_count >= 30:
+            end_time = time.time()
+            self.fps = self.frame_count / (end_time - self.start_time)
+            self.frame_count = 0
+            self.start_time = time.time()
+
+    def start(self):
+        cap = cv2.VideoCapture(0)  # Use default camera
+        
+        print("Starting camera feed... Press 'q' to quit")
+        
         while True:
             ret, frame = cap.read()
             if not ret:
+                print("Failed to grab frame")
                 break
 
-            frame = self.process_frame(frame)
-            cv2.imshow('Advanced Vision Tracking', frame)
-
+            # Run detections
+            self.detect_faces(frame)
+            self.detect_color(frame)
+            self.detect_motion(frame)
+            
+            # Calculate and display FPS
+            self.calculate_fps()
+            cv2.putText(frame, f'FPS: {int(self.fps)}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+            # Show the frame
+            cv2.imshow('Vision Tracking', frame)
+            
+            # Break the loop if 'q' is pressed
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
+        # Clean up
         cap.release()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    tracker = AdvancedVisionTracking()
-    tracker.start_tracking()
+    tracker = BasicVisionTracking()
+    tracker.start()
